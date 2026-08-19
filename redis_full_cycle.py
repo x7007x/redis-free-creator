@@ -33,9 +33,10 @@ JS_REGISTER = """(async (user) => {
     const csrfRes = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
     let token = null;
     let csrfBody = '';
+    let cfRay = csrfRes.headers.get('cf-ray') || '';
     try { token = (await csrfRes.json()).csrfToken.csrf_token; } catch(e) {
         try { csrfBody = await csrfRes.text(); } catch(ex) {}
-        return {error: 'csrf failed', status: csrfRes.status, body: csrfBody.slice(0, 400)};
+        return {error: 'csrf failed', status: csrfRes.status, body: csrfBody.slice(0, 400), cfRay: cfRay.slice(-30)};
     }
     const r = await fetch(location.origin + '/api/v1/users', {
         method: 'POST',
@@ -78,7 +79,7 @@ def register_redis_user(email, password):
             page.goto(REDIS, wait_until="domcontentloaded", timeout=90000)
             page.wait_for_timeout(8000)
             cks = [c["name"] for c in ctx.cookies() if "redis.io" in c["domain"]]
-            print("  cookies on redis.io:", cks)
+            print("  cookies on redis.io:", len(cks), "px3:", [c["value"][:20] for c in ctx.cookies() if c["name"] in ("_px3", "_pxhd", "JSESSIONID")])
             res = page.evaluate(JS_REGISTER, user)
             ctx.close()
         last = res
