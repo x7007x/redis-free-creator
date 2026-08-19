@@ -35,7 +35,7 @@ jobs:
           key: pw-chromium-${{ runner.os }}
 
       - name: Install python dependencies
-        run: python -m pip install playwright redis
+        run: python -m pip install playwright redis requests
 
       - name: Install chromium browser
         if: steps.pwcache.outputs.cache-hit != 'true'
