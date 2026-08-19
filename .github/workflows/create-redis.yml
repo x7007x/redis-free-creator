@@ -27,12 +27,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright redis
-          playwright install chromium --with-deps
+          python -m pip install playwright redis
+          python -m playwright install chromium --with-deps
 
       - name: Warm up PX session on cloud.redis.io
         run: |
-          python3 - <<'EOF'
+          python - <<'EOF'
           import time
           from playwright.sync_api import sync_playwright
           with sync_playwright() as pw:
@@ -49,15 +49,15 @@ jobs:
           EOF
 
       - name: Create mailbox, register, activate, get URL
-        run: python3 redis_full_cycle.py
+        run: python redis_full_cycle.py
 
       - name: Verify the connection
-        run: python3 redis_full_cycle.py test
+        run: python redis_full_cycle.py test
 
       - name: Read result
         id: result
         run: |
-          python3 - <<'EOF'
+          python - <<'EOF'
           import json
           d = json.load(open('${{ env.RESULT_FILE }}'))
           for k in ['email', 'password', 'url']:
@@ -73,7 +73,7 @@ jobs:
 
       - name: Write workflow summary
         run: |
-          python3 - <<'EOF'
+          python - <<'EOF'
           import json
           d = json.load(open('${{ env.RESULT_FILE }}'))
           summary = f"""
