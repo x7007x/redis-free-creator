@@ -68,8 +68,8 @@ def register_redis_user(email, password):
                 DATA_DIR, headless=True,
                 args=["--disable-blink-features=AutomationControlled"])
             page = ctx.new_page()
-            page.goto(REDIS, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(4000)
+            page.goto(REDIS, wait_until="networkidle", timeout=90000)
+            page.wait_for_timeout(8000)
             res = page.evaluate(JS_REGISTER, user)
             ctx.close()
         last = res
@@ -209,7 +209,7 @@ def main():
     res = register_redis_user(email, redis_pw)
     print("  register status:", res["status"])
     if res["status"] not in (200, 201):
-        print("  body:", res["body"])
+        print("  body:", (res.get("body") or "")[:500])
         sys.exit(1)
 
     print("STEP 3: waiting for activation email...")
