@@ -70,6 +70,8 @@ def register_redis_user(email, password):
                 DATA_DIR, headless=True,
                 args=["--disable-blink-features=AutomationControlled"])
             page = ctx.new_page()
+            page.goto("https://www.redis.io/", wait_until="networkidle", timeout=90000)
+            page.wait_for_timeout(3000)
             page.goto(REDIS, wait_until="networkidle", timeout=90000)
             page.wait_for_timeout(8000)
             cks = [c["name"] for c in ctx.cookies() if "redis.io" in c["domain"]]
