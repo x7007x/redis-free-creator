@@ -72,7 +72,7 @@ def register_redis_user(email, password):
             page = ctx.new_page()
             page.goto(REDIS, wait_until="networkidle", timeout=90000)
             page.wait_for_timeout(8000)
-            cks = [c["name"] for c in ctx.cookies if "redis.io" in c["domain"]]
+            cks = [c["name"] for c in ctx.cookies() if "redis.io" in c["domain"]]
             print("  cookies on redis.io:", cks)
             res = page.evaluate(JS_REGISTER, user)
             ctx.close()
