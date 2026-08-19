@@ -32,8 +32,10 @@ def create_mailbox():
 JS_REGISTER = """(async (user) => {
     const csrfRes = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
     let token = null;
+    let csrfBody = '';
     try { token = (await csrfRes.json()).csrfToken.csrf_token; } catch(e) {
-        return {error: 'csrf failed', status: csrfRes.status};
+        try { csrfBody = await csrfRes.text(); } catch(ex) {}
+        return {error: 'csrf failed', status: csrfRes.status, body: csrfBody.slice(0, 400)};
     }
     const r = await fetch(location.origin + '/api/v1/users', {
         method: 'POST',
@@ -209,7 +211,7 @@ def main():
     res = register_redis_user(email, redis_pw)
     print("  register status:", res["status"])
     if res["status"] not in (200, 201):
-        print("  body:", (res.get("body") or "")[:500])
+        print("  response:", json.dumps(res)[:600])
         sys.exit(1)
 
     print("STEP 3: waiting for activation email...")
