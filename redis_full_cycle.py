@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 
 import requests
@@ -14,9 +16,11 @@ PX_ARCHIVE = os.environ.get("PX_PROFILE_ARCHIVE", "")
 
 def extract_profile():
     if PX_ARCHIVE and os.path.isfile(PX_ARCHIVE) and not os.path.isdir(DATA_DIR):
-        import subprocess
-        subprocess.run(["bash", "-c", f"mkdir -p '{DATA_DIR}' && tar -xzf '{PX_ARCHIVE}' -C '{DATA_DIR}' --strip-components=1"], check=True)
-        print("PX profile restored from archive to", DATA_DIR)
+        os.makedirs(DATA_DIR, exist_ok=True)
+        subprocess.run(["bash", "-c",
+                        f"tar -xzf '{PX_ARCHIVE}' -C '{DATA_DIR}' --strip-components=1"],
+                       check=True)
+        print("PX profile restored to", DATA_DIR)
 
 
 def create_mailbox():
@@ -30,13 +34,14 @@ def create_mailbox():
 
 
 JS_REGISTER = """(async (user) => {
-    const csrfRes = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
+    const resp = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
     let token = null;
-    let csrfBody = '';
-    let cfRay = csrfRes.headers.get('cf-ray') || '';
-    try { token = (await csrfRes.json()).csrfToken.csrf_token; } catch(e) {
-        try { csrfBody = await csrfRes.text(); } catch(ex) {}
-        return {error: 'csrf failed', status: csrfRes.status, body: csrfBody.slice(0, 400), cfRay: cfRay.slice(-30)};
+    let body = '';
+    let ray = resp.headers.get('cf-ray') || '';
+    try { token = (await resp.json()).csrfToken.csrf_token; }
+    catch(e) {
+        try { body = await resp.text(); } catch(ex) {}
+        return {status: resp.status, body: body.slice(0, 300), cfRay: ray.slice(-28), error: 'csrf'};
     }
     const r = await fetch(location.origin + '/api/v1/users', {
         method: 'POST',
@@ -44,7 +49,7 @@ JS_REGISTER = """(async (user) => {
         headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token},
         body: JSON.stringify({user: user})
     });
-    return {status: r.status, body: await r.text()};
+    return {status: r.status, body: (await r.text()).slice(0, 300)};
 })"""
 
 
@@ -64,7 +69,7 @@ def register_redis_user(email, password):
         "permission": "owner",
         "role": "owner",
     }
-    last = None
+    last = {"status": None, "body": ""}
     for attempt in range(3):
         with sync_playwright() as pw:
             ctx = pw.chromium.launch_persistent_context(
@@ -75,17 +80,24 @@ def register_redis_user(email, password):
                 page.goto("https://www.redis.io/", wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_timeout(2000)
             except Exception as e:
-                print("  homepage visit skipped:", str(e)[:120])
+                print("  homepage visit skipped:", str(e)[:100])
             page.goto(REDIS, wait_until="domcontentloaded", timeout=90000)
             page.wait_for_timeout(8000)
-            cks = [c["name"] for c in ctx.cookies() if "redis.io" in c["domain"]]
-            print("  cookies on redis.io:", len(cks), "px3:", [c["value"][:20] for c in ctx.cookies() if c["name"] in ("_px3", "_pxhd", "JSESSIONID")])
-            res = page.evaluate(JS_REGISTER, user)
+            res = {"status": None, "body": ""}
+            for sub in range(4):
+                res = page.evaluate(JS_REGISTER, user)
+                if res.get("status") in (200, 201):
+                    ctx.close()
+                    return res
+                print("  csrf attempt %d => %s" % (sub + 1, res.get("status")))
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(6000)
             ctx.close()
         last = res
         if res.get("status") in (200, 201):
             return res
         print("Register attempt %d failed (%s), retrying..." % (attempt + 1, res.get("status")))
+        print("  response:", json.dumps(res)[:400])
         time.sleep(5)
     return last
 
@@ -124,15 +136,21 @@ def poll_activation(email, password, max_wait=240):
 
 JS_ACTIVATE_AND_URL = """(async (link) => {
     const nav = await fetch(link, {credentials: 'include'});
-    if (!nav.ok) return {error: 'activation fetch failed', status: nav.status};
+    if (!nav.ok) return {ok: false, error: 'activation fetch failed', status: nav.status};
 
     const url = new URL(link);
     const email = url.searchParams.get('u');
 
     const me = await fetch(location.origin + '/api/v1/users?limit=50', {credentials:'include'});
 
-    const csrfRes = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
-    const t = (await csrfRes.json()).csrfToken.csrf_token;
+    let csrfRes = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
+    let t = null;
+    for (let i = 0; i < 6; i++) {
+        try { t = (await csrfRes.json()).csrfToken.csrf_token; break; }
+        catch(e) { await new Promise(r => setTimeout(r, 3000)); }
+        csrfRes = await fetch(location.origin + '/api/v1/csrf', {credentials:'include'});
+    }
+    if (!t) return {ok: false, error: 'csrf never succeeded', status: csrfRes.status};
     const hdr = {credentials:'include', headers:{'X-CSRF-Token': t}};
 
     let loginStatus = null;
@@ -144,7 +162,7 @@ JS_ACTIVATE_AND_URL = """(async (link) => {
     const subRes = await fetch(location.origin + '/api/v1/subscriptions?limit=50', hdr);
     const subs = (await subRes.json()).subscriptions || [];
     const sub = subs.find(s => String(s.plan) === 'free') || subs[0];
-    if (!sub) return {error: 'no subscription', loginStatus, nav: nav.status};
+    if (!sub) return {ok: false, error: 'no subscription', loginStatus, nav: nav.status};
 
     let bdbId = null;
     for (const u of [
@@ -158,7 +176,7 @@ JS_ACTIVATE_AND_URL = """(async (link) => {
             if (list.length) { bdbId = list[0].id; break; }
         }
     }
-    if (!bdbId) return {error: 'no database', loginStatus, nav: nav.status};
+    if (!bdbId) return {ok: false, error: 'no database', loginStatus, nav: nav.status};
 
     let bdbInfo = null;
     for (let i = 0; i < 60; i++) {
@@ -170,7 +188,7 @@ JS_ACTIVATE_AND_URL = """(async (link) => {
         }
         await new Promise(res => setTimeout(res, 5000));
     }
-    if (!bdbInfo) return {error: 'database never became active', loginStatus, nav: nav.status};
+    if (!bdbInfo) return {ok: false, error: 'database never became active', loginStatus, nav: nav.status};
 
     const ac = bdbInfo.access_control || {};
     return {
@@ -205,8 +223,6 @@ def test_url(url):
 
 
 def main():
-    import sys
-
     extract_profile()
 
     print("=" * 60)
@@ -217,9 +233,12 @@ def main():
     print("STEP 2: registering Redis account with fake data...")
     redis_pw = "Redis#%d!" % (int(time.time()) % 10000)
     res = register_redis_user(email, redis_pw)
-    print("  register status:", res["status"])
-    if res["status"] not in (200, 201):
-        print("  response:", json.dumps(res)[:600])
+    print("  register status:", res.get("status"))
+    if res.get("status") not in (200, 201):
+        print("Registration failed. This usually means PerimeterX (HUMAN Security)")
+        print("blocked this network (datacenter IP). Run the script from a home")
+        print("network or add a residential proxy to bypass it.")
+        print("  response:", json.dumps(res)[:400])
         sys.exit(1)
 
     print("STEP 3: waiting for activation email...")
