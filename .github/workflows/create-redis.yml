@@ -11,7 +11,7 @@ permissions:
 jobs:
   create-redis:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       PX_PROFILE_DIR: ${{ github.workspace }}/.redis-px-profile
       RESULT_FILE: ${{ github.workspace }}/redis_new_account.json
@@ -25,28 +25,30 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install playwright redis
-          python -m playwright install chromium --with-deps
+      - name: Cache playwright browsers
+        id: pwcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/chromium
+          key: pw-chromium-${{ runner.os }}
 
-      - name: Warm up PX session on cloud.redis.io
+      - name: Install python dependencies
+        run: python -m pip install playwright redis
+
+      - name: Install chromium browser
+        if: steps.pwcache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
+
+      - name: Restore PX profile from release asset
         run: |
-          python - <<'EOF'
-          import time
-          from playwright.sync_api import sync_playwright
-          with sync_playwright() as pw:
-              ctx = pw.chromium.launch_persistent_context(
-                  "${{ env.PX_PROFILE_DIR }}", headless=True,
-                  args=["--disable-blink-features=AutomationControlled"],
-                  viewport={"width": 1366, "height": 768})
-              page = ctx.new_page()
-              page.goto("https://cloud.redis.io/", wait_until="domcontentloaded", timeout=90000)
-              page.wait_for_timeout(6000)
-              page.wait_for_timeout(2000)
-              ctx.close()
-          print("PX warmup done, profile saved to ${{ env.PX_PROFILE_DIR }}")
-          EOF
+          mkdir -p "${{ env.PX_PROFILE_DIR }}"
+          ASSET_URL=$(gh api repos/${{ github.repository }}/releases/tags/px-profile-v1 --jq '.assets[0].url')
+          gh api "$ASSET_URL" --header "Accept: application/octet-stream" > /tmp/px-profile.tar.gz
+          tar -xzf /tmp/px-profile.tar.gz -C "${{ env.PX_PROFILE_DIR }}" --strip-components=1
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Create mailbox, register, activate, get URL
         run: python redis_full_cycle.py

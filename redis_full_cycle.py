@@ -9,6 +9,14 @@ from playwright.sync_api import sync_playwright
 MAILTM = "https://api.mail.tm"
 REDIS = "https://cloud.redis.io"
 DATA_DIR = os.environ.get("PX_PROFILE_DIR", os.path.expanduser("~/.redis-px-profile"))
+PX_ARCHIVE = os.environ.get("PX_PROFILE_ARCHIVE", "")
+
+
+def extract_profile():
+    if PX_ARCHIVE and os.path.isfile(PX_ARCHIVE) and not os.path.isdir(DATA_DIR):
+        import subprocess
+        subprocess.run(["bash", "-c", f"mkdir -p '{DATA_DIR}' && tar -xzf '{PX_ARCHIVE}' -C '{DATA_DIR}' --strip-components=1"], check=True)
+        print("PX profile restored from archive to", DATA_DIR)
 
 
 def create_mailbox():
@@ -188,6 +196,8 @@ def test_url(url):
 
 def main():
     import sys
+
+    extract_profile()
 
     print("=" * 60)
     print("STEP 1: creating temporary mailbox (mail.tm)...")
