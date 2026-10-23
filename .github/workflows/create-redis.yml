@@ -1,0 +1,95 @@
+name: Create Redis Free Account
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  create-redis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RESULT_FILE: ${{ github.workspace }}/redis_new_account.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install python dependencies
+        run: python -m pip install camoufox redis requests
+
+      - name: Cache Camoufox browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/camoufox
+          key: camoufox-${{ runner.os }}-v1
+          restore-keys: camoufox-${{ runner.os }}-
+
+      - name: Install browser and system dependencies
+        run: |
+          for i in 1 2 3 4; do
+            python -m camoufox fetch && break
+            echo "camoufox fetch failed, retrying in 30s..."
+            sleep 30
+          done
+          python -c "from camoufox.pkgman import launch_path; print('browser at:', launch_path())"
+
+      - name: Create mailbox, register, activate, get URL, verify connection
+        env:
+          HEADLESS: "0"
+          BROWSER: camoufox
+        run: xvfb-run -a python main.py test
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            debug_signup.png
+            debug_console.png
+            debug_wizard.png
+            debug_plan.png
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: Write workflow summary
+        run: |
+          python - <<'EOF'
+          import json
+          d = json.load(open('${{ env.RESULT_FILE }}'))
+          safe_url = d['url'].replace('@', '&#64;')
+          summary = f"""
+          ## Redis Free Account Created
+
+          ### Storage URL
+
+          {safe_url}
+
+          | Item | Value |
+          | --- | --- |
+          | Email | `{d['email']}` |
+          | Redis password | `{d['password']}` |
+          | Mailbox password | `{d['mailbox_password']}` |
+          | Storage URL | `{d['url']}` |
+          | Database | {d['db']['name']} v{d['db']['version']} |
+          """
+          open('${{ github.workspace }}/SUMMARY.md', 'w').write(summary)
+          EOF
+          cat ${{ github.workspace }}/SUMMARY.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload account file
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-account
+          path: |
+            ${{ env.RESULT_FILE }}
+            ${{ github.workspace }}/SUMMARY.md
+          retention-days: 5
