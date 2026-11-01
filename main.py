@@ -13,8 +13,7 @@ try:
 except ImportError:
     from playwright.sync_api import sync_playwright
 
-TEMPMAIL_API = "https://tempmail.plus/api"
-TEMPMAIL_DOMAIN = "fexpost.com"
+TEMPMAIL_API = "https://api.internal.temp-mail.io/api/v3"
 SIGNUP_URL = "https://redis.io/try-free/"
 CONSOLE = "https://cloud.redis.io"
 SM = "https://app.redislabs.com/api/v1"
@@ -139,9 +138,10 @@ async () => {
 
 
 def create_mailbox():
-    local = "redisuser%d%d" % (int(time.time() % 100000), int(time.time() * 1000) % 1000)
-    email = local + "@" + TEMPMAIL_DOMAIN
-    return email, "", email
+    r = requests.post(TEMPMAIL_API + "/email/new", json={}, timeout=60)
+    r.raise_for_status()
+    d = r.json()
+    return d["email"], "", d["token"]
 
 
 def fill_first(page, selectors, value):
@@ -288,41 +288,43 @@ def signup_via_form(page, email, password):
     raise RuntimeError("sign-up not confirmed; page: " + page_text(page))
 
 
-def poll_activation(email, seconds=300):
+def poll_activation(token, email=None, seconds=300):
     print("Waiting for Redis activation email...")
     end = time.time() + seconds
     seen = set()
     while time.time() < end:
         try:
-            r = requests.get(TEMPMAIL_API + "/mails", params={"email": email, "limit": 10}, timeout=60)
-            mails = (r.json() or {}).get("mail_list") or []
+            r = requests.get(TEMPMAIL_API + "/email/" + email + "/messages", headers={"Authorization": "Bearer " + token}, timeout=60)
+            mails = r.json() or []
         except Exception as e:
-            print("  tempmail list failed:", str(e)[:120])
+            print("  temp-mail list failed:", str(e)[:120])
             time.sleep(8)
             continue
         for m in mails:
-            mid = m.get("mail_id")
+            mid = m.get("id") or m.get("_id") or json.dumps(m)[:60]
             if mid in seen:
                 continue
             seen.add(mid)
-            subj = (m.get("subject") or "").lower()
-            frm = json.dumps(m.get("from") or "").lower()
-            if "redis" not in subj and "activat" not in subj and "welcome" not in subj and "redis" not in frm:
+            blob = json.dumps(m)
+            low = blob.lower()
+            if "redis" not in low and "activat" not in low and "welcome" not in low:
                 continue
-            try:
-                d = requests.get(TEMPMAIL_API + "/mails/" + str(mid), params={"email": email}, timeout=60)
-                data = d.json() or {}
-            except Exception as e:
-                print("  tempmail message fetch failed:", str(e)[:120])
-                continue
-            blob = (data.get("html") or "") + " " + (data.get("text") or "")
-            if not blob.strip():
-                print("  tempmail message keys:", sorted(data.keys()), "snippet:", json.dumps(data)[:200])
-            links = re.findall(r'https?://[^\s"\'<>]+', blob)
+            links = re.findall(r'https?://[^\s"\'<>]+', blob.replace("\\u0026", "&"))
             links = [l.replace("&amp;", "&") for l in links]
             pick = [l for l in links if "activate-registration" in l or "activate" in l]
             if not pick:
                 pick = [l for l in links if "cloud.redis" in l or "auth.redis" in l]
+            if not pick and m.get("id"):
+                try:
+                    d = requests.get(TEMPMAIL_API + "/email/" + email + "/messages/" + str(m["id"]), headers={"Authorization": "Bearer " + token}, timeout=60)
+                    blob2 = d.text or ""
+                    links = re.findall(r'https?://[^\s"\'<>]+', blob2.replace("\\u0026", "&"))
+                    links = [l.replace("&amp;", "&") for l in links]
+                    pick = [l for l in links if "activate-registration" in l or "activate" in l]
+                    if not pick:
+                        print("  temp-mail detail keys:", blob2[:220])
+                except Exception as e:
+                    print("  temp-mail detail failed:", str(e)[:120])
             if pick:
                 print("Activation email received.")
                 return pick[0]
@@ -675,8 +677,8 @@ def main():
         print("\nVERIFIED OK")
         return
     print("=" * 60)
-    print("STEP 1: creating temporary mailbox (tempmail.plus)...")
-    email, mail_pw, inbox = create_mailbox()
+    print("STEP 1: creating temporary mailbox (temp-mail.io)...")
+    email, mail_pw, mail_token = create_mailbox()
     password = "Redis#%d!x" % int(time.time() % 100000)
     print("  email:   ", email)
     print("  mailbox password:", mail_pw)
@@ -737,7 +739,7 @@ def main():
                     raise
                 continue
             print("STEP 3: waiting for activation email...")
-            link = poll_activation(inbox)
+            link = poll_activation(mail_token, email)
             print("  link:", link[:90], "...")
             print("STEP 4: activating, logging in and fetching free database...")
             result = login_and_get_url(page, link, email, password, api_log)
