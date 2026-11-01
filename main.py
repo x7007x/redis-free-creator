@@ -13,8 +13,8 @@ try:
 except ImportError:
     from playwright.sync_api import sync_playwright
 
-MAILDROP_API = "https://api.maildrop.cc/graphql"
-MAILDROP_DOMAIN = "maildrop.cc"
+TEMPMAIL_API = "https://tempmail.plus/api"
+TEMPMAIL_DOMAIN = "fexpost.com"
 SIGNUP_URL = "https://redis.io/try-free/"
 CONSOLE = "https://cloud.redis.io"
 SM = "https://app.redislabs.com/api/v1"
@@ -140,8 +140,8 @@ async () => {
 
 def create_mailbox():
     local = "redisuser%d%d" % (int(time.time() % 100000), int(time.time() * 1000) % 1000)
-    email = local + "@" + MAILDROP_DOMAIN
-    return email, "", local
+    email = local + "@" + TEMPMAIL_DOMAIN
+    return email, "", email
 
 
 def fill_first(page, selectors, value):
@@ -288,38 +288,36 @@ def signup_via_form(page, email, password):
     raise RuntimeError("sign-up not confirmed; page: " + page_text(page))
 
 
-def maildrop_query(query):
-    r = requests.post(MAILDROP_API, json={"query": query}, timeout=60)
-    r.raise_for_status()
-    return r.json().get("data") or {}
-
-
-def poll_activation(mailbox, seconds=300):
+def poll_activation(email, seconds=300):
     print("Waiting for Redis activation email...")
     end = time.time() + seconds
     seen = set()
     while time.time() < end:
         try:
-            data = maildrop_query('{ inbox(mailbox: "%s") { id subject headerfrom } }' % mailbox)
+            r = requests.get(TEMPMAIL_API + "/mails", params={"email": email, "limit": 10}, timeout=60)
+            mails = (r.json() or {}).get("mail_list") or []
         except Exception as e:
-            print("  maildrop inbox check failed:", str(e)[:120])
+            print("  tempmail list failed:", str(e)[:120])
             time.sleep(8)
             continue
-        for m in data.get("inbox") or []:
-            if m["id"] in seen:
+        for m in mails:
+            mid = m.get("mail_id")
+            if mid in seen:
                 continue
-            seen.add(m["id"])
+            seen.add(mid)
             subj = (m.get("subject") or "").lower()
-            frm = (m.get("headerfrom") or "").lower()
+            frm = json.dumps(m.get("from") or "").lower()
             if "redis" not in subj and "activat" not in subj and "welcome" not in subj and "redis" not in frm:
                 continue
             try:
-                full = maildrop_query('{ message(mailbox: "%s", id: "%s") { html data } }' % (mailbox, m["id"]))
+                d = requests.get(TEMPMAIL_API + "/mails/" + str(mid), params={"email": email}, timeout=60)
+                data = d.json() or {}
             except Exception as e:
-                print("  maildrop message fetch failed:", str(e)[:120])
+                print("  tempmail message fetch failed:", str(e)[:120])
                 continue
-            msg = full.get("message") or {}
-            blob = (msg.get("html") or "") + " " + (msg.get("data") or "")
+            blob = (data.get("html") or "") + " " + (data.get("text") or "")
+            if not blob.strip():
+                print("  tempmail message keys:", sorted(data.keys()), "snippet:", json.dumps(data)[:200])
             links = re.findall(r'https?://[^\s"\'<>]+', blob)
             links = [l.replace("&amp;", "&") for l in links]
             pick = [l for l in links if "activate-registration" in l or "activate" in l]
@@ -677,8 +675,8 @@ def main():
         print("\nVERIFIED OK")
         return
     print("=" * 60)
-    print("STEP 1: creating temporary mailbox (maildrop)...")
-    email, mail_pw, mailbox = create_mailbox()
+    print("STEP 1: creating temporary mailbox (tempmail.plus)...")
+    email, mail_pw, inbox = create_mailbox()
     password = "Redis#%d!x" % int(time.time() % 100000)
     print("  email:   ", email)
     print("  mailbox password:", mail_pw)
@@ -739,7 +737,7 @@ def main():
                     raise
                 continue
             print("STEP 3: waiting for activation email...")
-            link = poll_activation(mailbox)
+            link = poll_activation(inbox)
             print("  link:", link[:90], "...")
             print("STEP 4: activating, logging in and fetching free database...")
             result = login_and_get_url(page, link, email, password, api_log)
