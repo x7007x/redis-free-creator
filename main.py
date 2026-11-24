@@ -475,14 +475,14 @@ def click_text(page, patterns):
         try:
             loc = page.get_by_role("button", name=re.compile(pat, re.I)).first
             if loc.count() > 0 and loc.is_visible() and loc.is_enabled():
-                loc.click()
+                loc.click(timeout=3000)
                 return pat
         except Exception:
             pass
         try:
             loc = page.locator("text=" + pat).first
             if loc.count() > 0 and loc.is_visible():
-                loc.click()
+                loc.click(timeout=3000)
                 return pat
         except Exception:
             pass
@@ -507,22 +507,76 @@ def click_button_matching(page, patterns, banned=()):
             for pat in patterns:
                 if re.search(pat, t, re.I):
                     if b.is_visible() and b.is_enabled():
-                        b.click()
+                        b.click(timeout=3000)
                         return t[:60]
         except Exception:
             pass
     return None
 
 
+def modal_open(page):
+    try:
+        return page.evaluate("""() => {
+            const d = document.querySelector('[role="dialog"], [class*="modal" i], [class*="Modal"]');
+            if (d && d.offsetParent) return true;
+            return (document.body.innerText || "").toLowerCase().includes("what's new");
+        }""")
+    except Exception:
+        return False
+
+
+def dismiss_modals(page):
+    if not modal_open(page):
+        return False
+    try:
+        closed = page.evaluate("""() => {
+            const out = [];
+            const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="Modal"]')).filter(d => d.offsetParent);
+            for (const d of dialogs) {
+                const btns = Array.from(d.querySelectorAll('button'));
+                const close = btns.find(b => /close|dismiss/i.test(b.getAttribute('aria-label') || '') || /^[\\u00d7\\u2715x]$/.test((b.innerText || '').trim()) || /close/i.test(b.className || ''));
+                if (close) { close.click(); out.push((d.innerText || '').slice(0, 50).replace(/\\n/g, ' ')); }
+            }
+            return out;
+        }""")
+    except Exception:
+        closed = []
+    if closed:
+        print("  modal dismissed:", closed)
+        page.wait_for_timeout(1500)
+        return True
+    try:
+        b = page.get_by_role("button", name=re.compile("close|dismiss|got it|skip tour", re.I)).first
+        if b.count() > 0 and b.is_visible():
+            b.click(timeout=3000)
+            print("  modal dismissed via close button")
+            page.wait_for_timeout(1500)
+            return True
+    except Exception:
+        pass
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(1500)
+        if not modal_open(page):
+            print("  modal dismissed via Escape")
+            return True
+    except Exception:
+        pass
+    print("  modal still open after dismiss attempts")
+    return False
+
+
 def create_via_wizard(page):
     page.goto(CONSOLE + "/#/databases", wait_until="domcontentloaded", timeout=90000)
     wait_settled(page, 30)
+    dismiss_modals(page)
     print("  wizard start:", page_text(page).replace("\n", " ")[:280])
     end = time.time() + 300
     last_txt = ""
     plan_dumped = False
     free_clicked = False
     while time.time() < end:
+        dismiss_modals(page)
         txt = page_text(page)
         low = txt.lower()
         if txt != last_txt:
